@@ -15,7 +15,7 @@ WORKDIR /go/src/github.com/openshift/ovn-kubernetes
 COPY . .
 
 # build the binaries
-RUN cd go-controller; CGO_ENABLED=0 make
+RUN cd go-controller; CGO_ENABLED=0 make all GCFLAGS=all="-N -l"
 RUN cd go-controller; CGO_ENABLED=0 make windows
 
 FROM registry.ci.openshift.org/ocp/4.8:cli AS cli

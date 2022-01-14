@@ -33,12 +33,18 @@ type Handler struct {
 }
 
 func (h *Handler) OnAdd(obj interface{}) {
+	//BZ2034645
+	klog.Infof("BZ2034645 | Running OnAdd (handler.go)")
+	//BZ2034645
 	if atomic.LoadUint32(&h.tombstone) == handlerAlive {
 		h.base.OnAdd(obj)
 	}
 }
 
 func (h *Handler) OnUpdate(oldObj, newObj interface{}) {
+	//BZ2034645
+	klog.Infof("BZ2034645 | Running OnUpdate (handler.go)")
+	//BZ2034645
 	if atomic.LoadUint32(&h.tombstone) == handlerAlive {
 		h.base.OnUpdate(oldObj, newObj)
 	}
@@ -146,16 +152,39 @@ func (i *informer) removeHandler(handler *Handler) {
 }
 
 func (i *informer) processEvents(events chan *event, stopChan <-chan struct{}) {
-	defer i.shutdownWg.Done()
+	// defer i.shutdownWg.Done()
+	//BZ2034645
+	t := time.NewTicker(300 * time.Second)
+	defer func() {
+		i.shutdownWg.Done()
+		t.Stop()
+		//BZ2034645
+		klog.Infof("BZ2034645 | Stopped processing events")
+		//BZ2034645
+	}()
+	//BZ2034645
 	for {
 		select {
 		case e, ok := <-events:
+			//BZ2034645
+			klog.Infof("BZ2034645 | Received event")
+			//BZ2034645
 			if !ok {
 				return
 			}
+			//BZ2034645
+			klog.Infof("BZ2034645 | Processing event %v", *e)
+			//BZ2034645
 			e.process(e)
 		case <-stopChan:
+			//BZ2034645
+			klog.Infof("BZ2034645 | Received signal to stop channel")
+			//BZ2034645
 			return
+		//BZ2034645
+		case <-t.C:
+			klog.Infof("BZ2034645 | Ticker fired after 300 seconds, event channel len(e): %d and cap(e): %d", len(events), cap(events))
+			//BZ2034645
 		}
 	}
 }

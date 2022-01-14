@@ -430,20 +430,32 @@ func (oc *Controller) recordPodEvent(addErr error, pod *kapi.Pod) {
 func (oc *Controller) iterateRetryPods() {
 	oc.retryPodsLock.Lock()
 	defer oc.retryPodsLock.Unlock()
+	//BZ2034645
+	klog.Infof("BZ2034645 | iterateRetryPods running. len(oc.retryPods): %d", len(oc.retryPods))
+	//BZ2034645
 	now := time.Now()
 	for uid, podEntry := range oc.retryPods {
 		pod := podEntry.pod
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | iterateRetryPods", pod.Name)
+		//BZ2034645
 		podDesc := fmt.Sprintf("[%s/%s/%s]", pod.UID, pod.Namespace, pod.Name)
 		// it could be that the Pod got deleted, but Pod's DeleteFunc has not been called yet, so don't retry
 		kPod, err := oc.watchFactory.GetPod(pod.Namespace, pod.Name)
 		if err != nil && errors.IsNotFound(err) {
 			klog.Infof("%s pod not found in the informers cache, not going to retry pod setup", podDesc)
+			//BZ2034645
+			klog.Infof("BZ2034645 (%s) | iterateRetryPods - %s pod not found in the informers cache, not going to retry pod setup", pod.Name, podDesc)
+			//BZ2034645
 			delete(oc.retryPods, uid)
 			continue
 		}
 
 		if !util.PodScheduled(kPod) {
 			klog.V(5).Infof("retry: %s not scheduled", podDesc)
+			//BZ2034645
+			klog.Infof("BZ2034645 (%s) | iterateRetryPods - retry: %s not scheduled", pod.Name, podDesc)
+			//BZ2034645
 			continue
 		}
 
@@ -480,6 +492,9 @@ func (oc *Controller) addRetryPod(pod *kapi.Pod) {
 	oc.retryPodsLock.Lock()
 	defer oc.retryPodsLock.Unlock()
 	oc.retryPods[pod.UID] = retryEntry{pod, time.Now()}
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | AddFunc: Added pod to retryPods(len: %d)", pod.Name, len(oc.retryPods))
+	//BZ2034645
 }
 
 func exGatewayAnnotationsChanged(oldPod, newPod *kapi.Pod) bool {
@@ -495,25 +510,43 @@ func networkStatusAnnotationsChanged(oldPod, newPod *kapi.Pod) bool {
 // ensurePod tries to set up a pod. It returns success or failure; failure
 // indicates the pod should be retried later.
 func (oc *Controller) ensurePod(oldPod, pod *kapi.Pod, addPort bool) bool {
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | ensurePod", pod.Name)
+	//BZ2034645
 	// Try unscheduled pods later
 	if !util.PodScheduled(pod) {
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | ensurePod: pod unscheduled", pod.Name)
+		//BZ2034645
 		return false
 	}
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | ensurePod: pod scheduled", pod.Name)
+	//BZ2034645
 
 	if oldPod != nil && (exGatewayAnnotationsChanged(oldPod, pod) || networkStatusAnnotationsChanged(oldPod, pod)) {
 		// No matter if a pod is ovn networked, or host networked, we still need to check for exgw
 		// annotations. If the pod is ovn networked and is in update reschedule, addLogicalPort will take
 		// care of updating the exgw updates
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | ensurePod: running deletePodExternalGW (oldPod: %s)", pod.Name, oldPod.Name)
+		//BZ2034645
 		oc.deletePodExternalGW(oldPod)
 	}
 
 	if util.PodWantsNetwork(pod) && addPort {
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | ensurePod: util.PodWantsNetwork(pod) && addPort", pod.Name)
+		//BZ2034645
 		if err := oc.addLogicalPort(pod); err != nil {
 			klog.Errorf(err.Error())
 			oc.recordPodEvent(err, pod)
 			return false
 		}
 	} else {
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | ensurePod: pod does not want network", pod.Name)
+		//BZ2034645
 		// either pod is host-networked or its an update for a normal pod (addPort=false case)
 		if oldPod == nil || exGatewayAnnotationsChanged(oldPod, pod) || networkStatusAnnotationsChanged(oldPod, pod) {
 			if err := oc.addPodExternalGW(pod); err != nil {
@@ -538,13 +571,22 @@ func (oc *Controller) WatchPods() {
 	oc.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
+			//BZ2034645
+			klog.Infof("BZ2034645 (%s) | AddFunc", pod.Name)
+			//BZ2034645
 			if !oc.ensurePod(nil, pod, true) {
+				//BZ2034645
+				klog.Infof("BZ2034645 (%s) | AddFunc: Adding pod to addRetryPod", pod.Name)
+				//BZ2034645
 				oc.addRetryPod(pod)
 			}
 		},
 		UpdateFunc: func(old, newer interface{}) {
 			oldPod := old.(*kapi.Pod)
 			pod := newer.(*kapi.Pod)
+			//BZ2034645
+			klog.Infof("BZ2034645 (%s -> %s) | UpdateFunc", oldPod.Name, pod.Name)
+			//BZ2034645
 
 			// there may be a situation where this update event is not the latest
 			// and we rely on annotations to determine the pod mac/ifaddr
@@ -561,7 +603,13 @@ func (oc *Controller) WatchPods() {
 					podNs, podName)
 				return
 			}
+			//BZ2034645
+			klog.Infof("BZ2034645 (%s -> %s) | UpdateFunc: Running ensurePod", oldPod.Name, pod.Name)
+			//BZ2034645
 			if !oc.ensurePod(oldPod, pod, oc.checkAndDeleteRetryPod(pod.UID)) {
+				//BZ2034645
+				klog.Infof("BZ2034645 (%s -> %s) | UpdateFunc: Adding pod to addRetryPod", oldPod.Name, pod.Name)
+				//BZ2034645
 				// add back the failed pod
 				oc.addRetryPod(pod)
 				return

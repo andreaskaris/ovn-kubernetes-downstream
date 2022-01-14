@@ -17,6 +17,7 @@ limitations under the License.
 package cache
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -24,6 +25,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/clock"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // This file implements a low-level controller that is used in
@@ -227,14 +231,44 @@ type ResourceEventHandlerFuncs struct {
 
 // OnAdd calls AddFunc if it's not nil.
 func (r ResourceEventHandlerFuncs) OnAdd(obj interface{}) {
+	//BZ2034645
+	infoStrBZ := "BZ2034645 | OnAdd"
+	pod, ok := obj.(*corev1.Pod)
+	if ok {
+		infoStrBZ = fmt.Sprintf("%s; pod: %v", infoStrBZ, pod.Name)
+	}
+	klog.Infof(infoStrBZ)
+	//BZ2034645
 	if r.AddFunc != nil {
+		//BZ2034645
+		klog.Infof("BZ2034645 | Running AddFunc")
+		//BZ2034645
 		r.AddFunc(obj)
 	}
 }
 
 // OnUpdate calls UpdateFunc if it's not nil.
 func (r ResourceEventHandlerFuncs) OnUpdate(oldObj, newObj interface{}) {
+	//BZ2034645
+	infoStrBZ := "BZ2034645 | OnUpdate: oldObj"
+	oldPod, okOld := oldObj.(*corev1.Pod)
+	if okOld {
+		infoStrBZ = fmt.Sprintf("%s; oldPod: %v", infoStrBZ, oldPod.Name)
+	}
+	newPod, okNew := newObj.(*corev1.Pod)
+	if okNew {
+		infoStrBZ = fmt.Sprintf("%s; newPod: %v", infoStrBZ, newPod.Name)
+	}
+	if okOld || okNew {
+		klog.Infof(infoStrBZ)
+	}
+	//BZ2034645
 	if r.UpdateFunc != nil {
+		//BZ2034645
+		if okOld || okNew {
+			klog.Infof("BZ2034645 | Running UpdateFunc")
+		}
+		//BZ2034645
 		r.UpdateFunc(oldObj, newObj)
 	}
 }

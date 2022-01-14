@@ -3,6 +3,7 @@ package ovn
 import (
 	"fmt"
 	"net"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -296,8 +297,15 @@ func (oc *Controller) getHybridOverlayExternalGwAnnotation(ns string) (net.IP, e
 }
 
 func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | addLogicalPort", pod.Name)
+	debug.PrintStack()
+	//BZ2034645
 	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
 	if oc.lsManager.IsNonHostSubnetSwitch(pod.Spec.NodeName) {
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | addLogicalPort: oc.lsManager.IsNonHostSubnetSwitch return nil", pod.Name)
+		//BZ2034645
 		return nil
 	}
 
@@ -315,6 +323,9 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 
 	portName := podLogicalPortName(pod)
 	klog.V(5).Infof("Creating logical port for %s on switch %s", portName, logicalSwitch)
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | addLogicalPort: creating logical port for %s on switch %s", pod.Name, portName, logicalSwitch)
+	//BZ2034645
 
 	var podMac net.HardwareAddr
 	var podIfAddrs []*net.IPNet
@@ -403,6 +414,9 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 		}
 	}
 
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | addLogicalPort: - needsIP: %v", pod.Name, needsIP)
+	//BZ2034645
 	if needsIP {
 		// try to get the IP from existing port in OVN first
 		podMac, podIfAddrs, err = oc.getPortAddresses(logicalSwitch, portName)
@@ -473,6 +487,10 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 
 		klog.V(5).Infof("Annotation values: ip=%v ; mac=%s ; gw=%s\nAnnotation=%s",
 			podIfAddrs, podMac, podAnnotation.Gateways, marshalledAnnotation)
+		//BZ2034645
+		klog.Infof("BZ2034645 (%s) | addLogicalPort: Annotation values: ip=%v ; mac=%s ; gw=%s\nAnnotation=%s",
+			podIfAddrs, podMac, podAnnotation.Gateways, marshalledAnnotation)
+		//BZ2034645
 		if err = oc.kube.SetAnnotationsOnPod(pod.Namespace, pod.Name, marshalledAnnotation); err != nil {
 			return fmt.Errorf("failed to set annotation on pod %s: %v", pod.Name, err)
 		}
@@ -501,6 +519,13 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	cmds = append(cmds, cmd)
 
 	// execute all the commands together.
+	//BZ2034645
+	cmdStringBZ := ""
+	for _, cmd := range cmds {
+		cmdStringBZ += fmt.Sprintf("%v ; ", *cmd)
+	}
+	klog.Infof("BZ2034645 (%s) | addLogicalPort: cmds: %v", pod.Name, cmdStringBZ)
+	//BZ2034645
 	err = oc.ovnNBClient.Execute(cmds...)
 	if err != nil {
 		return fmt.Errorf("error while creating logical port %s error: %v",
@@ -572,6 +597,9 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 
 	// observe the pod creation latency metric.
 	metrics.RecordPodCreated(pod)
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | addLogicalPort: return nil at end of function", pod.Name)
+	//BZ2034645
 	return nil
 }
 

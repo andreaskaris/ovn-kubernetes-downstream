@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"encoding/json"
+
 	"k8s.io/klog/v2"
 
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
@@ -59,11 +60,15 @@ func (k *Kube) SetAnnotationsOnPod(namespace, podName string, annotations map[st
 
 	podDesc := namespace + "/" + podName
 	klog.Infof("Setting annotations %v on pod %s", annotations, podDesc)
+	//BZ2034645
+	klog.Infof("BZ2034645 (%s) | SetAnnotationsOnPod: Setting annotations %v on pod %s", podName, annotations, podDesc)
+	//BZ2034645
 	patchData, err = json.Marshal(&patch)
 	if err != nil {
 		klog.Errorf("Error in setting annotations on pod %s: %v", podDesc, err)
 		return err
 	}
+	klog.Infof("BZ2034645 (%s) | SetAnnotationsOnPod: PatchData %s", podName, patchData)
 
 	_, err = k.KClient.CoreV1().Pods(namespace).Patch(context.TODO(), podName, types.MergePatchType, patchData, metav1.PatchOptions{})
 	if err != nil {

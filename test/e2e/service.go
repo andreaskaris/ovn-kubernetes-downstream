@@ -10,12 +10,14 @@ import (
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
+	"k8s.io/utils/pointer"
 
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
@@ -24,7 +26,47 @@ import (
 
 var _ = ginkgo.Describe("Services", func() {
 	const (
-		serviceName = "testservice"
+		serviceName     = "testservice"
+		pythonWebServer = `#!/bin/bash
+cat <<'EOF' > /tmp/server.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib import parse
+from random import choice
+from string import ascii_lowercase
+import logging
+
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type','text/html')
+        self.end_headers()
+
+        payload_size="100"
+
+        path = self.path
+        o = parse.urlparse(path)
+        qs = parse.parse_qs(o.query)
+        if 'payload_size' in qs:
+            payload_size = qs['payload_size'][0]
+
+        string_val = "".join(choice(ascii_lowercase) for i in range(int(payload_size)))
+        if 'search_string' in qs:
+            search_string = qs['search_string'][0]
+            string_val = "".join(search_string for i in range(int(int(payload_size)/len(search_string))))
+
+        logging.warning("Sending response %%s\n" %% string_val)
+        self.wfile.write(bytes(string_val, "utf8"))
+
+print("Starting server")
+with HTTPServer(('', %d), handler) as server:
+    server.serve_forever()
+EOF
+python3 /tmp/server.py`
+		pythonWebServerImage = "registry.fedoraproject.org/fedora:latest"
+		podPortMin           = 9800
+		podPortMax           = 9899
+		servicePortMin       = 31200
+		servicePortMax       = 31299
 	)
 
 	f := wrappedTestFramework("services")
@@ -91,6 +133,118 @@ var _ = ginkgo.Describe("Services", func() {
 			return stdout == nodeName, nil
 		})
 		framework.ExpectNoError(err)
+	})
+
+	// Set up a hostNetwork pod on ovn-control-plane.
+	// Set up a nodePort service.
+	// E.g.: Query from ovn-worker2 to the service on ovn-worker that targets the pod on ovn-control-plane.
+	ginkgo.When("A nodePort service load-balancing to a hostNetworked pod is created", func() {
+		var podNode string
+		var serviceNodeInternalIPs []string
+		var clientPod v1.Pod
+		var deployment appsv1.Deployment
+		var podPort int
+		var podName string
+		var svc v1.Service
+		var servicePort int
+
+		ginkgo.BeforeEach(func() {
+			framework.Logf("Selecting 3 schedulable nodes")
+			nodes, err := e2enode.GetBoundedReadySchedulableNodes(f.ClientSet, 3)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			// Find 1st node to run the hostNetwork web server on.
+			podNode = nodes.Items[0].Name
+			// Find 2nd node to run the service query against.
+			serviceNodeInternalIPs = e2enode.GetAddresses(&nodes.Items[1], v1.NodeInternalIP)
+			gomega.Expect(len(serviceNodeInternalIPs)).To(gomega.BeNumerically(">", 0))
+			// Find ovnkube-node pod on 3rd node from which we will run the curl to the service.
+			pods, err := cs.CoreV1().Pods("ovn-kubernetes").List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "app=ovnkube-node",
+				FieldSelector: "spec.nodeName=" + nodes.Items[2].Name,
+			})
+			framework.ExpectNoError(err)
+			gomega.Expect(pods.Items).To(gomega.HaveLen(1))
+			clientPod = pods.Items[0]
+
+			gomega.Eventually(func() error {
+				podPort = rand.Intn(podPortMax-podPortMin) + podPortMin
+				podName = fmt.Sprintf("test-pod-%d", podPort)
+				framework.Logf("Creating the hostNetwork pod listening on TCP port %d", podPort)
+				deployment = appsv1.Deployment{
+					TypeMeta:   metav1.TypeMeta{},
+					ObjectMeta: metav1.ObjectMeta{Name: podName},
+					Spec: appsv1.DeploymentSpec{
+						Replicas: pointer.Int32Ptr(1),
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"app": podName,
+							},
+						},
+						Template: v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									"app": podName,
+								},
+							},
+							Spec: v1.PodSpec{
+								Containers: []v1.Container{
+									{
+										Name:  "fedora",
+										Image: pythonWebServerImage,
+										Command: []string{
+											"/bin/bash",
+											"-xc",
+											fmt.Sprintf(pythonWebServer, podPort),
+										},
+									},
+								},
+								HostNetwork: true,
+								NodeName:    podNode,
+							},
+						},
+					},
+				}
+				_, err := f.ClientSet.AppsV1().Deployments(f.Namespace.Name).Create(context.TODO(), &deployment, metav1.CreateOptions{})
+				return err
+			}).Should(gomega.Succeed())
+
+			gomega.Eventually(func() error {
+				servicePort = rand.Intn(servicePortMax-servicePortMin) + servicePortMin
+				framework.Logf("Creating the nodePort service listening on TCP port %d and targeting pod port %d",
+					servicePort, podPort)
+				svc = v1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-service"},
+					Spec: v1.ServiceSpec{
+						Ports: []v1.ServicePort{
+							{
+								NodePort: int32(servicePort),
+								Port:     int32(podPort),
+								Protocol: v1.ProtocolTCP,
+							},
+						},
+						Selector: map[string]string{"app": podName},
+						Type:     v1.ServiceTypeNodePort},
+				}
+				_, err := f.ClientSet.CoreV1().Services(f.Namespace.Name).Create(context.TODO(), &svc, metav1.CreateOptions{})
+				return err
+			}).Should(gomega.Succeed())
+
+		})
+		ginkgo.It("Queries to the nodePort service shall work", func() {
+			for _, serviceNodeIP := range serviceNodeInternalIPs {
+				cmd := fmt.Sprintf("curl --max-time 10 -g -q -s 'http://%s:%d?payload_size=10'", serviceNodeIP, servicePort)
+				_, err := framework.RunHostCmdWithRetries(clientPod.Namespace, clientPod.Name, cmd, framework.Poll, 60*time.Second)
+				framework.ExpectNoError(err)
+			}
+		})
+		ginkgo.It("Queries to the nodePort service with large replies shall work", func() {
+			for _, serviceNodeIP := range serviceNodeInternalIPs {
+				cmd := fmt.Sprintf("curl --max-time 10 -g -q -s 'http://%s:%d?payload_size=10000'", serviceNodeIP, servicePort)
+				_, err := framework.RunHostCmdWithRetries(clientPod.Namespace, clientPod.Name, cmd, framework.Poll, 60*time.Second)
+				framework.ExpectNoError(err)
+
+			}
+		})
 	})
 
 	// This test checks a special case: we add another IP address on the node *and* manually set that
